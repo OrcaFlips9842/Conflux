@@ -6,7 +6,8 @@ class Investor:
         self.address = address
         self.enabled = enabled
         self.date_added = None
-
+        self.last_updated = None
+        
         self.quality_score = 0
 
         # Trading performance

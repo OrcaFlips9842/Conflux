@@ -1,7 +1,7 @@
 import sqlite3
 from pathlib import Path
 
-from investoryManager import InvestorManager
+from investorManager import InvestorManager
 
 
 # Database location
@@ -18,22 +18,27 @@ def setup_database():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
             address TEXT NOT NULL UNIQUE,
-            enabled INTEGER NOT NULL DEFAULT 1
+            enabled INTEGER NOT NULL DEFAULT 1,
+
+            date_added TEXT,
+            last_updated TEXT,
+
+            quality_score REAL DEFAULT 0,
+            total_trades INTEGER DEFAULT 0,
+            win_rate REAL DEFAULT 0,
+            sum_profits REAL DEFAULT 0,
+            trading_frequency REAL DEFAULT 0,
+            average_hold_time REAL DEFAULT 0,
+            p90_trade_size REAL DEFAULT 0,
+            average_trade_size REAL DEFAULT 0,
+            average_return REAL DEFAULT 0,
+            average_loss REAL DEFAULT 0
         )
     """)
 
     db.commit()
     db.close()
-
-# Make sure the database is ready
 setup_database()
-
 
 # Create manager
 investor_manager = InvestorManager(DB_PATH)
-
-
-investors = investor_manager.get_all_investors()
-
-for investor in investors:
-    print(investor)
