@@ -1,8 +1,14 @@
 import sqlite3
 from pathlib import Path
 
-from investorManager import InvestorManager
+import os
+from dotenv import load_dotenv
+load_dotenv()
 
+from investorManager import InvestorManager
+from traderScraper import TraderScraper
+
+API_KEY = os.getenv("BIRDEYE_API_KEY")
 
 # Database location
 PROJECT_DIR = Path(__file__).resolve().parent.parent
@@ -42,3 +48,13 @@ setup_database()
 
 # Create manager
 investor_manager = InvestorManager(DB_PATH)
+
+scraper = TraderScraper(API_KEY)
+trades = scraper.get_trades(
+    "DAqCpTpQN1JNCDYLXWir28q1J2eXSufiNNADsSnUQTBZ",
+    hours=24 * 7
+)
+parsed_trades = scraper.parse_trades(trades)
+
+for trade in parsed_trades:
+    print(trade)
