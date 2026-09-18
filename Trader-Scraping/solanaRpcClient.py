@@ -1,4 +1,3 @@
-import os
 import random
 import time
 
@@ -13,14 +12,9 @@ class SolanaRpcClient:
     the public endpoint ends up throttling too hard for your volume.
     """
 
-    def __init__(self, rpc_url=None, min_interval=0.5, max_retries=6):
-        # Falls back to the (now signup-required) Ankr public endpoint if
-        # SOLANA_RPC_URL isn't set. Put your full URL, including any API
-        # key, in .env - e.g.
-        # SOLANA_RPC_URL=https://rpc.ankr.com/solana/YOUR_ANKR_API_KEY
-        self.rpc_url = rpc_url or os.getenv(
-            "SOLANA_RPC_URL", "https://rpc.ankr.com/solana"
-        )
+    def __init__(self, rpc_url="https://rpc.ankr.com/solana",
+                 min_interval=0.5, max_retries=6):
+        self.rpc_url = rpc_url
         self.min_interval = min_interval  # seconds between requests
         self.max_retries = max_retries
         self._last_call = 0.0
