@@ -1,138 +1,56 @@
 import requests
-import time
-
 
 class TraderScraper:
 
+    SOL_MINT = "So11111111111111111111111111111111111111112"
+    USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+    
     def __init__(self, api_key):
         self.api_key = api_key
-        self.url = "https://public-api.birdeye.so/trader/txs/seek_by_time"
+        self.url = "https://api.helius.xyz/v0/addresses/{}/transactions"
 
-    def get_trades(self, address, hours=24):
+    def get_trades(self, address, limit=100):
 
-        current_time = int(time.time())
-        after_time = current_time - (hours * 60 * 60)
+        url = self.url.format(address)
 
-        headers = {
-            "X-API-KEY": self.api_key,
-            "x-chain": "solana"
+        params = {
+            "api-key": self.api_key,
+            "limit": limit
         }
 
-        all_items = []
-        offset = 0
-        limit = 100
+        response = requests.get(url, params=params)
 
-        while True:
+        if not response.ok:
+            print("Status:", response.status_code)
+            print("Response:", response.text)
 
-            params = {
-                "address": address,
-                "after_time": after_time,
-                "tx_type": "swap",
-                "limit": limit,
-                "offset": offset
-            }
+        response.raise_for_status()
 
-            response = requests.get(
-                self.url,
-                headers=headers,
-                params=params
-            )
+        return response.json()
+    
+    def parse_transaction(self, wallet, transaction):
 
-            if not response.ok:
-                print("Status:", response.status_code)
-                print("Response:", response.text)
+        token_changes = {}
 
-            response.raise_for_status()
+        for transfer in transaction.get("tokenTransfers", []):
 
-            data = response.json()
+            mint = transfer.get("mint")
+            amount = transfer.get("tokenAmount", 0)
 
-            items = data["data"]["items"]
-            all_items.extend(items)
+            if not mint or not amount:
+                continue
 
-            print(f"Loaded {len(items)} trades (total: {len(all_items)})")
+            if transfer.get("fromUserAccount") == wallet:
+                token_changes[mint] = token_changes.get(mint, 0) - amount
 
-            # Stop if there are no more pages
-            if not data["data"]["has_next"]:
-                break
+            if transfer.get("toUserAccount") == wallet:
+                token_changes[mint] = token_changes.get(mint, 0) + amount
 
-            offset += limit
-
-        # Put the collected items back into the same format
         return {
-            "data": {
-                "items": all_items,
-                "has_next": False
-            },
-            "success": True
+            "signature": transaction["signature"],
+            "timestamp": transaction["timestamp"],
+            "type": transaction["type"],
+            "source": transaction["source"],
+            "native_change": transaction.get("feePayer") == wallet,
+            "token_changes": token_changes
         }
-
-    def parse_trades(self, data):
-
-        items = data["data"]["items"]
-
-        transactions = {}
-
-        for item in items:
-            tx_hash = item["tx_hash"]
-
-            if tx_hash not in transactions:
-                transactions[tx_hash] = []
-
-            transactions[tx_hash].append(item)
-
-        trades = []
-
-        for tx_hash, items in transactions.items():
-
-            trade = self._parse_transaction(tx_hash, items)
-
-            if trade:
-                trades.append(trade)
-
-        return trades
-
-    def _parse_transaction(self, tx_hash, items):
-
-        for item in items:
-
-            quote = item["quote"]
-            base = item["base"]
-
-            quote_symbol = quote["symbol"].strip()
-            base_symbol = base["symbol"].strip()
-
-            # BUY
-            if (
-                quote["type_swap"] == "from"
-                and base["type_swap"] == "to"
-                and quote_symbol in ["SOL", "USDC"]
-            ):
-                return {
-                    "token": base_symbol,
-                    "token_address": base["address"],
-                    "side": "buy",
-                    "token_amount": base["ui_amount"],
-                    "usd_value": item["volume_usd"],
-                    "price": base["price"],
-                    "timestamp": item["block_unix_time"],
-                    "tx_hash": tx_hash
-                }
-
-            # SELL
-            if (
-                quote["type_swap"] == "to"
-                and base["type_swap"] == "from"
-                and quote_symbol in ["SOL", "USDC"]
-            ):
-                return {
-                    "token": base_symbol,
-                    "token_address": base["address"],
-                    "side": "sell",
-                    "token_amount": base["ui_amount"],
-                    "usd_value": item["volume_usd"],
-                    "price": base["price"],
-                    "timestamp": item["block_unix_time"],
-                    "tx_hash": tx_hash
-                }
-
-        return None

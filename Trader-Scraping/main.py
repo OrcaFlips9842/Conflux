@@ -8,7 +8,7 @@ load_dotenv()
 from investorManager import InvestorManager
 from traderScraper import TraderScraper
 
-API_KEY = os.getenv("BIRDEYE_API_KEY")
+API_KEY = os.getenv("HELIUS_API_KEY")
 
 # Database location
 PROJECT_DIR = Path(__file__).resolve().parent.parent
@@ -49,12 +49,33 @@ setup_database()
 # Create manager
 investor_manager = InvestorManager(DB_PATH)
 
-scraper = TraderScraper(API_KEY)
-trades = scraper.get_trades(
-    "DAqCpTpQN1JNCDYLXWir28q1J2eXSufiNNADsSnUQTBZ",
-    hours=24 * 7
-)
-parsed_trades = scraper.parse_trades(trades)
+# Main Code
 
-for trade in parsed_trades:
-    print(trade)
+scraper = TraderScraper(API_KEY)
+
+
+wallet = "DAqCpTpQN1JNCDYLXWir28q1J2eXSufiNNADsSnUQTBZ"
+
+transactions = scraper.get_trades(
+    wallet,
+    limit=10
+)
+
+for transaction in transactions:
+
+    parsed = scraper.parse_transaction(
+        wallet,
+        transaction
+    )
+
+    if parsed["token_changes"]:
+
+        print("\n==============================")
+        print("SIGNATURE:", parsed["signature"])
+        print("TYPE:", parsed["type"])
+        print("SOURCE:", parsed["source"])
+
+        print("TOKEN CHANGES:")
+
+        for mint, amount in parsed["token_changes"].items():
+            print(mint, amount)
