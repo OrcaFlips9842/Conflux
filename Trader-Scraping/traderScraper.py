@@ -23,63 +23,67 @@ class TraderScraper:
     def __init__(self, rpc_client=None):
         self.rpc = rpc_client or SolanaRpcClient()
 
-    def get_trades(self, address, days=30, batch_size=1):
-        # batch_size=1 sends getTransaction calls one at a time. The
-        # public RPC endpoint seems to rate-limit a batched request
-        # (several calls in one HTTP POST) harder than the same calls
-        # sent sequentially - bump this back up to 5-10 once you're on
-        # a dedicated RPC provider instead of the public endpoint.
-        cutoff = int(time.time()) - (days * 24 * 60 * 60)
+    def get_trades(self, address, days=30, since=None, page_size=1000, max_raw_transactions=5000):
+        """
+        Pulls swap history for a wallet.
 
-        signatures = self._get_signatures_since(address, cutoff)
+        - since: unix timestamp cursor (e.g. an investor's last_updated) -
+          use this for incremental updates so only new activity is pulled.
+          Takes priority over `days` when both are given.
+        - days: used for a first-time/full pull when there's no `since`.
+        - max_raw_transactions: hard cap on raw transactions fetched per
+          call, regardless of how much history that covers. This is what
+          actually protects your RPC credits from a high-frequency bot -
+          it stops the pull itself, rather than fetching everything and
+          truncating afterward. Once hit, `capped` comes back True and
+          the returned trades only reflect the most recent activity up
+          to the cap.
+
+        Returns {"trades": [...], "capped": bool}.
+        """
+        cutoff = since if since is not None else int(time.time()) - (days * 24 * 60 * 60)
 
         trades = []
-        for i in range(0, len(signatures), batch_size):
-            batch = signatures[i:i + batch_size]
-            requests_list = [
-                ("getTransaction", [
-                    sig,
-                    {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}
-                ])
-                for sig in batch
-            ]
-            results = self.rpc.call_batch(requests_list)
-
-            for sig, tx in zip(batch, results):
-                if tx is None:
-                    continue
-                trade = self._extract_swap(address, sig, tx)
-                if trade:
-                    trades.append(trade)
-
-        trades.sort(key=lambda t: t["timestamp"])
-        return trades
-
-    def _get_signatures_since(self, address, cutoff):
-        signatures = []
-        before = None
+        pagination_token = None
+        raw_count = 0
+        capped = False
 
         while True:
-            page = self.rpc.get_signatures_for_address(address, before=before, limit=1000)
+            entries, pagination_token = self.rpc.get_transactions_for_address(
+                address, limit=page_size, pagination_token=pagination_token
+            )
 
-            if not page:
+            if not entries:
                 break
 
             stop = False
-            for entry in page:
+            for entry in entries:
+                raw_count += 1
+
+                if raw_count > max_raw_transactions:
+                    capped = True
+                    stop = True
+                    break
+
                 block_time = entry.get("blockTime")
                 if block_time is None or block_time < cutoff:
                     stop = True
                     break
-                if entry.get("err") is None:
-                    signatures.append(entry["signature"])
 
-            if stop or len(page) < 1000:
+                # entry shape: {slot, transactionIndex, blockTime, transaction, meta}
+                # - same "transaction"/"meta" shape as the old getTransaction
+                # result, so _extract_swap needs no changes.
+                trade = self._extract_swap(address, entry.get("transaction", {}).get(
+                    "signatures", [None]
+                )[0], entry)
+                if trade:
+                    trades.append(trade)
+
+            if stop or not pagination_token:
                 break
 
-            before = page[-1]["signature"]
-
-        return signatures
+        trades.sort(key=lambda t: t["timestamp"])
+        return {"trades": trades, "capped": capped}
 
     def _extract_swap(self, address, signature, tx):
         try:

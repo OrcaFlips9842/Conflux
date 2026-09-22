@@ -11,7 +11,8 @@ class Investor:
         self.quality_score = 0
 
         # Trading performance
-        self.total_trades = 0
+        self.wins = 0
+        self.losses = 0
         self.win_rate = 0
         self.sum_profits = 0
 
@@ -26,5 +27,21 @@ class Investor:
         self.average_return = 0
         self.average_loss = 0
 
+        
+        #Running information variables
+        self.hold_time_sum = 0
+        self.trade_size_sum = 0
+        self.return_sum = 0  
+        self.loss_sum = 0     
+        
+        self.trade_sizes = []
+        self.open_positions = {}
+
+        self.capped_at_limit = False
+     
+    @property
+    def total_trades(self):
+        return self.wins + self.losses   
+        
     def __repr__(self):
         return f"Investor(id={self.id}, name='{self.name}', address='{self.address}')"

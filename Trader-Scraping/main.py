@@ -1,88 +1,115 @@
-import os
-import random
-import time
+import sqlite3
+from pathlib import Path
 
-import requests
+from dotenv import load_dotenv
+load_dotenv()
+
+from investorManager import InvestorManager
+from traderScraper import TraderScraper
+from metrics import apply_trades, derive_summary
+
+from grading import calculate_quality_score
+from investor import Investor
+
+# Database location
+PROJECT_DIR = Path(__file__).resolve().parent.parent
+DB_PATH = PROJECT_DIR / "Data" / "investors.db"
 
 
-class SolanaRpcClient:
-    """
-    Minimal JSON-RPC client for Solana with basic rate limiting and
-    retry/backoff. Works against the free public RPC endpoint or any
-    other RPC URL (Helius, Shyft, QuickNode, etc.) - swap rpc_url if
-    the public endpoint ends up throttling too hard for your volume.
-    """
-
-    def __init__(self, rpc_url=None, min_interval=0.5, max_retries=6):
-        # Falls back to the (now signup-required) Ankr public endpoint if
-        # SOLANA_RPC_URL isn't set. Put your full URL, including any API
-        # key, in .env - e.g.
-        # SOLANA_RPC_URL=https://rpc.ankr.com/solana/YOUR_ANKR_API_KEY
-        self.rpc_url = rpc_url or os.getenv(
-            "SOLANA_RPC_URL", "https://rpc.ankr.com/solana"
+# Create database tables
+def setup_database():
+    db = sqlite3.connect(DB_PATH)
+ 
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS investors (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            address TEXT NOT NULL UNIQUE,
+            enabled INTEGER NOT NULL DEFAULT 1,
+ 
+            date_added TEXT,
+            last_updated TEXT,
+ 
+            quality_score REAL DEFAULT 0,
+            wins INTEGER DEFAULT 0,
+            losses INTEGER DEFAULT 0,
+            sum_profits REAL DEFAULT 0,
+            trading_frequency REAL DEFAULT 0,
+            average_hold_time REAL DEFAULT 0,
+            p90_trade_size REAL DEFAULT 0,
+            average_trade_size REAL DEFAULT 0,
+            average_return REAL DEFAULT 0,
+            average_loss REAL DEFAULT 0,
+            win_rate REAL DEFAULT 0,
+ 
+            hold_time_sum REAL DEFAULT 0,
+            trade_size_sum REAL DEFAULT 0,
+            return_sum REAL DEFAULT 0,
+            loss_sum REAL DEFAULT 0,
+            trade_sizes_json TEXT DEFAULT '[]',
+            open_positions_json TEXT DEFAULT '{}',
+            capped_at_limit INTEGER DEFAULT 0
         )
-        self.min_interval = min_interval  # seconds between requests
-        self.max_retries = max_retries
-        self._last_call = 0.0
+    """)
+ 
+    db.commit()
+    db.close()
+setup_database()
+ 
+# Create manager
+investor_manager = InvestorManager(DB_PATH)
 
-    def _throttle(self):
-        elapsed = time.time() - self._last_call
-        if elapsed < self.min_interval:
-            time.sleep(self.min_interval - elapsed)
-        self._last_call = time.time()
 
-    def _call(self, method, params):
-        payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
+# Main Code
+# --------------------------------------------------------------
+# This is now just a single-wallet smoke test - no API key needed,
+# since TraderScraper talks to a Solana RPC node directly. For the
+# real 100-wallet population run, use populate_investors.py instead,
+# which does this same get_trades -> calculate_metrics -> save loop
+# for every wallet in wallets.csv.
+# --------------------------------------------------------------
 
-        for attempt in range(self.max_retries):
-            self._throttle()
+scraper = TraderScraper()
 
-            response = requests.post(self.rpc_url, json=payload, timeout=30)
+wallet = "C4Svaa7djC8d3CVxaohrsedccaKqimNoJrWe9iNPdix5"
 
-            if response.status_code == 429:
-                wait = (2 ** attempt) + random.random()
-                print(f"Rate limited, backing off {wait:.1f}s...")
-                time.sleep(wait)
-                continue
+result = scraper.get_trades(wallet, days=21)
+trades = result["trades"]
 
-            response.raise_for_status()
-            data = response.json()
-
-            if "error" in data:
-                raise RuntimeError(f"RPC error calling {method}: {data['error']}")
-
-            return data["result"]
-
-        raise RuntimeError(f"Exceeded max retries calling {method}")
-
-    def call_batch(self, requests_list):
-        """
-        requests_list: list of (method, params) tuples.
-        Returns results in the same order. Falls back to sequential
-        calls if the RPC endpoint doesn't support batching well.
-        """
-        payload = [
-            {"jsonrpc": "2.0", "id": i, "method": m, "params": p}
-            for i, (m, p) in enumerate(requests_list)
-        ]
-
-        self._throttle()
-
-        try:
-            response = requests.post(self.rpc_url, json=payload, timeout=60)
-            response.raise_for_status()
-            data = response.json()
-            data.sort(key=lambda r: r["id"])
-            return [r.get("result") for r in data]
-        except Exception:
-            return [self._call(m, p) for m, p in requests_list]
-
-    def get_signatures_for_address(self, address, before=None, limit=1000):
-        params = [address, {"limit": limit}]
-        if before:
-            params[1]["before"] = before
-        return self._call("getSignaturesForAddress", params)
-
-    def get_transaction(self, signature):
-        params = [signature, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}]
-        return self._call("getTransaction", params)
+print(f"Found {len(trades)} swap legs" + (" (hit fetch cap)" if result["capped"] else ""))
+ 
+for trade in trades:
+    print("==============================")
+    print("TX:", trade["tx_hash"])
+    print("SIDE:", trade["side"])
+    print("TOKEN:", trade["token"])
+    print("TOKEN AMOUNT:", trade["token_amount"])
+    print(f"QUOTE: {trade['quote_amount']} {trade['quote_symbol']}")
+ 
+state = apply_trades(
+    {"wins": 0, "losses": 0, "sum_profits": 0, "hold_time_sum": 0,
+     "trade_size_sum": 0, "return_sum": 0, "loss_sum": 0,
+     "trade_sizes": [], "open_positions": {}},
+    trades
+)
+summary = derive_summary(state, elapsed_days=21)
+ 
+print("\n--- METRICS ---")
+print(f"wins: {state['wins']}")
+print(f"losses: {state['losses']}")
+print(f"sum_profits: {state['sum_profits']}")
+for key, value in summary.items():
+    print(f"{key}: {value}")
+ 
+# calculate_quality_score() reads investor.wins/losses/win_rate/etc off an
+# Investor object, not a raw dict - build a throwaway one from this run's
+# state/summary just to grade it. This isn't saved anywhere; for real
+# grading tied to a db row, use populate_investors.py.
+investor = Investor(investor_id=None, name="smoke-test", address=wallet)
+for field, value in state.items():
+    setattr(investor, field, value)
+for field, value in summary.items():
+    setattr(investor, field, value)
+investor.capped_at_limit = result["capped"]
+ 
+print(f"\nquality_score: {calculate_quality_score(investor)}")

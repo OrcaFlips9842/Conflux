@@ -1,3 +1,4 @@
+import os
 import random
 import time
 
@@ -12,9 +13,14 @@ class SolanaRpcClient:
     the public endpoint ends up throttling too hard for your volume.
     """
 
-    def __init__(self, rpc_url="https://rpc.ankr.com/solana",
-                 min_interval=0.5, max_retries=6):
-        self.rpc_url = rpc_url
+    def __init__(self, rpc_url=None, min_interval=0.5, max_retries=6):
+        # Falls back to the (now signup-required) Ankr public endpoint if
+        # SOLANA_RPC_URL isn't set. Put your full URL, including any API
+        # key, in .env - e.g.
+        # SOLANA_RPC_URL=https://rpc.ankr.com/solana/YOUR_ANKR_API_KEY
+        self.rpc_url = rpc_url or os.getenv(
+            "SOLANA_RPC_URL", "https://rpc.ankr.com/solana"
+        )
         self.min_interval = min_interval  # seconds between requests
         self.max_retries = max_retries
         self._last_call = 0.0
@@ -38,6 +44,9 @@ class SolanaRpcClient:
                 print(f"Rate limited, backing off {wait:.1f}s...")
                 time.sleep(wait)
                 continue
+
+            if not response.ok:
+                print(f"RPC HTTP {response.status_code} response body:", response.text)
 
             response.raise_for_status()
             data = response.json()
@@ -80,3 +89,25 @@ class SolanaRpcClient:
     def get_transaction(self, signature):
         params = [signature, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}]
         return self._call("getTransaction", params)
+
+    def get_transactions_for_address(self, address, limit=1000, pagination_token=None):
+        """
+        Helius-exclusive method: returns up to `limit` full transactions in
+        ONE request, replacing the get_signatures_for_address + get_transaction
+        fan-out entirely. Only works against a Helius RPC endpoint - if you
+        switch providers later, fall back to the two methods above instead.
+
+        Returns (transactions, next_pagination_token). next_pagination_token
+        is None when there's nothing more to page through.
+        """
+        config = {
+            "transactionDetails": "full",
+            "maxSupportedTransactionVersion": 1,
+            "encoding": "jsonParsed",
+            "limit": limit,
+        }
+        if pagination_token:
+            config["paginationToken"] = pagination_token
+
+        result = self._call("getTransactionsForAddress", [address, config])
+        return result["data"], result.get("paginationToken")
