@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
+from dotenv import load_dotenv
+load_dotenv()
 
 from investorManager import InvestorManager
 from traderScraper import TraderScraper
@@ -14,9 +16,14 @@ PROJECT_DIR = Path(__file__).resolve().parent.parent
 DB_PATH = PROJECT_DIR / "Data" / "investors.db"
 WALLETS_CSV = Path(__file__).resolve().parent / "wallets.csv"  # columns: name,address
 
-LOOKBACK_DAYS = 21            # used only the first time a wallet is added
+LOOKBACK_DAYS = 30            # used only the first time a wallet is added
 MAX_RAW_TRANSACTIONS = 5000   # per-wallet, per-run cap - see traderScraper.py
 SECONDS_BETWEEN_WALLETS = 0.5
+
+UPDATE_EXISTING = False   # set True to re-pull/re-score wallets already in the db
+TOP_COUNT = 100           # ranks 1..TOP_COUNT stay enabled
+BENCH_COUNT = 50          # ranks TOP_COUNT+1..TOP_COUNT+BENCH_COUNT are kept, disabled
+                          # anyone ranked below that gets deleted from the db entirely
 
 STATE_FIELDS = [
     "wins", "losses", "sum_profits", "hold_time_sum",
@@ -40,7 +47,7 @@ def get_sol_price_usd():
 
 
 def load_wallets(csv_path):
-    with open(csv_path, newline="") as f:
+    with open(csv_path, newline="", encoding="utf-8-sig") as f:
         return [(row["name"], row["address"]) for row in csv.DictReader(f)]
 
 
@@ -48,6 +55,41 @@ def elapsed_days(date_added_iso):
     added = datetime.fromisoformat(date_added_iso)
     now = datetime.now(timezone.utc)
     return max((now - added).total_seconds() / 86400, 1)
+
+
+def finalize_leaderboard(investor_manager):
+    """
+    Re-ranks the ENTIRE investors table (not just wallets touched this
+    run) by quality_score, descending:
+      - rank 1..TOP_COUNT: enabled
+      - rank TOP_COUNT+1..TOP_COUNT+BENCH_COUNT: kept, but disabled
+      - anyone ranked lower: deleted outright
+
+    This keeps the db an exact, precise leaderboard rather than an
+    ever-growing pile of wallets - only the current top
+    (TOP_COUNT + BENCH_COUNT) are ever kept.
+    """
+    investors = investor_manager.get_all_investors()
+    investors.sort(key=lambda inv: inv.quality_score, reverse=True)
+
+    active = 0
+    benched = 0
+    dropped = 0
+
+    for rank, investor in enumerate(investors):
+        if rank < TOP_COUNT:
+            investor.enabled = True
+            investor_manager.save_investor(investor)
+            active += 1
+        elif rank < TOP_COUNT + BENCH_COUNT:
+            investor.enabled = False
+            investor_manager.save_investor(investor)
+            benched += 1
+        else:
+            investor_manager.delete_investor(investor.id)
+            dropped += 1
+
+    print(f"\nLeaderboard finalized: {active} active, {benched} benched, {dropped} dropped")
 
 
 def main():
@@ -65,15 +107,13 @@ def main():
 
         investor = investor_manager.get_investor_by_address(address)
 
-        if investor is None:
-            # First time seeing this wallet - full lookback pull.
-            investor = investor_manager.create_investor(name, address)
-            investor.date_added = now
-            since, days = None, LOOKBACK_DAYS
-        else:
-            # Already tracked - only pull what happened since last run.
-            since = int(datetime.fromisoformat(investor.last_updated).timestamp())
-            days = None
+        if investor is not None and not UPDATE_EXISTING:
+            print("Already tracked and UPDATE_EXISTING is False - skipping")
+            continue
+
+        is_new = investor is None
+        since = None if is_new else int(datetime.fromisoformat(investor.last_updated).timestamp())
+        days = LOOKBACK_DAYS if is_new else None
 
         try:
             result = scraper.get_trades(
@@ -83,8 +123,16 @@ def main():
             print(f"Failed to pull trades: {e}")
             continue
 
+        # Only create the db row once we know the fetch actually worked -
+        # otherwise a failed pull would leave a permanent, never-scored
+        # ghost row that finalize_leaderboard would wrongly treat as a
+        # legitimate (score-0) entry.
+        if is_new:
+            investor = investor_manager.create_investor(name, address)
+            investor.date_added = now
+
         new_trades = result["trades"]
-        #print(f"Found {len(new_trades)} new swap legs" + (" (hit fetch cap)" if result["capped"] else ""))
+        print(f"Found {len(new_trades)} new swap legs" + (" (hit fetch cap)" if result["capped"] else ""))
 
         state = {field: getattr(investor, field) for field in STATE_FIELDS}
         state = apply_trades(state, new_trades, sol_price_usd=sol_price)
@@ -100,7 +148,8 @@ def main():
         investor.last_updated = now
         investor.quality_score = calculate_quality_score(investor)
 
-        investor_manager.save_investor(investor)
+        if investor.quality_score != 0:
+            investor_manager.save_investor(investor)
 
         print(
             f"wins={investor.wins} losses={investor.losses} "
@@ -109,6 +158,8 @@ def main():
         )
 
         time.sleep(SECONDS_BETWEEN_WALLETS)
+
+    finalize_leaderboard(investor_manager)
 
 
 if __name__ == "__main__":
