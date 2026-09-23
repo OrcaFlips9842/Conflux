@@ -13,6 +13,9 @@ env/
 .env
 .env.*
 
+*.db
+*.csv
+
 # IDE
 .vscode/
 
