@@ -28,8 +28,20 @@ BENCH_COUNT = 50          # ranks TOP_COUNT+1..TOP_COUNT+BENCH_COUNT are kept, d
 STATE_FIELDS = [
     "wins", "losses", "sum_profits", "hold_time_sum",
     "trade_size_sum", "return_sum", "loss_sum",
-    "trade_sizes", "open_positions",
+    "trade_sizes", "open_positions", "last_trade_timestamp",
 ]
+
+
+def empty_state():
+    # A fresh dict with its own new list/dict every call - NOT a shared
+    # constant. apply_trades mutates open_positions/trade_sizes in place,
+    # so reusing the same nested objects across different wallets would
+    # silently corrupt one wallet's data with another's.
+    return {
+        "wins": 0, "losses": 0, "sum_profits": 0, "hold_time_sum": 0,
+        "trade_size_sum": 0, "return_sum": 0, "loss_sum": 0,
+        "trade_sizes": [], "open_positions": {}, "last_trade_timestamp": 0,
+    }
 
 
 def get_sol_price_usd():
@@ -123,19 +135,38 @@ def main():
             print(f"Failed to pull trades: {e}")
             continue
 
-        # Only create the db row once we know the fetch actually worked -
-        # otherwise a failed pull would leave a permanent, never-scored
-        # ghost row that finalize_leaderboard would wrongly treat as a
-        # legitimate (score-0) entry.
-        if is_new:
-            investor = investor_manager.create_investor(name, address)
-            investor.date_added = now
-
         new_trades = result["trades"]
         print(f"Found {len(new_trades)} new swap legs" + (" (hit fetch cap)" if result["capped"] else ""))
 
-        state = {field: getattr(investor, field) for field in STATE_FIELDS}
-        state = apply_trades(state, new_trades, sol_price_usd=sol_price)
+        # Start from either a fresh empty state (new wallet) or the
+        # existing accumulators (wallet already tracked) - NOT from an
+        # investor object yet, since we don't want to create/keep a row
+        # at all if this wallet still has zero completed trades after
+        # this pull. See the total==0 branch below.
+        if is_new:
+            starting_state = empty_state()
+        else:
+            starting_state = {field: getattr(investor, field) for field in STATE_FIELDS}
+        state = apply_trades(starting_state, new_trades, sol_price_usd=sol_price)
+
+        if state["wins"] + state["losses"] == 0:
+            # No completed round-trip trades at all - either this pull
+            # found nothing usable (e.g. hit the fetch cap on a wallet
+            # whose trades don't fit our swap-detection pattern), or this
+            # wallet has never had a matched buy+sell in our window (e.g.
+            # a single big dump with no visible prior buy - exactly the
+            # "one-hit rug pull" pattern this is meant to screen out).
+            # A wallet with zero real signal gets no row at all.
+            if is_new:
+                print("No completed trades found - not adding to db")
+            else:
+                print("Still zero completed trades after update - removing from db")
+                investor_manager.delete_investor(investor.id)
+            continue
+
+        if is_new:
+            investor = investor_manager.create_investor(name, address)
+            investor.date_added = now
 
         for field in STATE_FIELDS:
             setattr(investor, field, state[field])
@@ -148,8 +179,7 @@ def main():
         investor.last_updated = now
         investor.quality_score = calculate_quality_score(investor)
 
-        if investor.quality_score != 0:
-            investor_manager.save_investor(investor)
+        investor_manager.save_investor(investor)
 
         print(
             f"wins={investor.wins} losses={investor.losses} "

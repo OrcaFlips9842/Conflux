@@ -9,7 +9,8 @@ INVESTOR_COLUMNS = """
     average_hold_time, p90_trade_size, average_trade_size,
     average_return, average_loss, win_rate,
     hold_time_sum, trade_size_sum, return_sum, loss_sum,
-    trade_sizes_json, open_positions_json, capped_at_limit
+    trade_sizes_json, open_positions_json, capped_at_limit,
+    last_trade_timestamp
 """
 
 
@@ -85,7 +86,8 @@ class InvestorManager:
                 loss_sum = ?,
                 trade_sizes_json = ?,
                 open_positions_json = ?,
-                capped_at_limit = ?
+                capped_at_limit = ?,
+                last_trade_timestamp = ?
             WHERE id = ?
         """, (
             investor.name,
@@ -111,6 +113,7 @@ class InvestorManager:
             json.dumps(investor.trade_sizes),
             json.dumps(investor.open_positions),
             int(investor.capped_at_limit),
+            investor.last_trade_timestamp,
             investor.id
         ))
 
@@ -158,5 +161,6 @@ class InvestorManager:
         investor.trade_sizes = json.loads(row[21]) if row[21] else []
         investor.open_positions = json.loads(row[22]) if row[22] else {}
         investor.capped_at_limit = bool(row[23])
+        investor.last_trade_timestamp = row[24] or 0
 
         return investor

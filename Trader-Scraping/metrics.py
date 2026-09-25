@@ -8,7 +8,10 @@ def apply_trades(state, trades, sol_price_usd=None):
     trading, without re-fetching or re-processing full history each time.
 
     state keys: wins, losses, sum_profits, hold_time_sum, trade_size_sum,
-    return_sum, loss_sum, trade_sizes (list), open_positions (dict).
+    return_sum, loss_sum, trade_sizes (list), open_positions (dict),
+    last_trade_timestamp (unix timestamp of the most recent trade seen
+    across all runs so far, used to judge whether a wallet is still
+    actually active rather than a one-off flash in the past).
     """
 
     open_positions = state.get("open_positions", {})
@@ -20,6 +23,7 @@ def apply_trades(state, trades, sol_price_usd=None):
     return_sum = state.get("return_sum", 0)
     loss_sum = state.get("loss_sum", 0)
     trade_sizes = state.get("trade_sizes", [])
+    last_trade_timestamp = state.get("last_trade_timestamp", 0)
 
     normalized = []
     for t in trades:
@@ -31,6 +35,8 @@ def apply_trades(state, trades, sol_price_usd=None):
     normalized.sort(key=lambda t: t["timestamp"])
 
     for t in normalized:
+        last_trade_timestamp = max(last_trade_timestamp, t["timestamp"])
+
         token = t["token"]
         open_positions.setdefault(token, [])
 
@@ -95,6 +101,7 @@ def apply_trades(state, trades, sol_price_usd=None):
         "loss_sum": loss_sum,
         "trade_sizes": trade_sizes,
         "open_positions": open_positions,
+        "last_trade_timestamp": last_trade_timestamp,
     }
 
 

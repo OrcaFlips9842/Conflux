@@ -35,6 +35,8 @@ class Investor:
         self.loss_sum = 0     
         
         self.trade_sizes = []
+        self.last_trade_timestamp = 0
+
         self.open_positions = {}
 
         self.capped_at_limit = False
