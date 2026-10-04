@@ -1,7 +1,7 @@
 import json
 import sqlite3
 
-from investor import Investor
+from .investor import Investor
 
 INVESTOR_COLUMNS = """
     id, name, address, enabled, date_added, last_updated,
